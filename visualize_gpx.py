@@ -267,44 +267,93 @@ def create_visualization(coords, distances, elevations, stops=None):
     return fig
 
 
-def create_elevation_profile_2d(distances, elevations):
+def create_map_2d(coords, stops=None):
     """
-    Create a separate 2D elevation profile plot.
+    Create a top-down 2D map of the route (no elevation).
     """
+    # Normalize lat/lon to relative coordinates (same as 3D)
+    lat_start, lon_start = coords[0]
+    
+    # Approximate conversion (works for small distances)
+    x = (coords[:, 1] - lon_start) * 111 * np.cos(np.radians(lat_start))  # km
+    y = (coords[:, 0] - lat_start) * 111 * 1.5  # km, scaled up 1.5x for better proportions
+    
+    # Create figure
     fig = go.Figure()
     
-    # Filled area under the curve
+    # Route line
     fig.add_trace(go.Scatter(
-        x=distances,
-        y=elevations,
+        x=x, y=y,
         mode='lines',
-        fill='tozeroy',
-        fillcolor='rgba(70, 130, 255, 0.3)',
-        line=dict(color='rgb(70, 130, 255)', width=3),
-        name='Elevation Profile',
-        hovertemplate='<b>Distance:</b> %{x:.1f} km<br>' +
-                      '<b>Elevation:</b> %{y:.0f} m<br>' +
-                      '<extra></extra>'
+        line=dict(
+            color='rgb(0, 0, 0)',
+            width=3
+        ),
+        name='Route',
+        showlegend=False,
+        hoverinfo='skip'
     ))
     
+    # Add start marker
+    fig.add_trace(go.Scatter(
+        x=[x[0]], y=[y[0]],
+        mode='markers',
+        marker=dict(size=10, color='rgb(0, 0, 0)'),
+        name='Start',
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    
+    # Add end marker
+    fig.add_trace(go.Scatter(
+        x=[x[-1]], y=[y[-1]],
+        mode='markers',
+        marker=dict(size=10, color='rgb(0, 0, 0)'),
+        name='End',
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    
+    # Add stop markers if provided
+    if stops is not None:
+        stop_x = []
+        stop_y = []
+        
+        for stop_lat, stop_lon in stops:
+            # Find closest point on route
+            idx = find_closest_point_index(coords, stop_lat, stop_lon)
+            stop_x.append(x[idx])
+            stop_y.append(y[idx])
+        
+        fig.add_trace(go.Scatter(
+            x=stop_x, y=stop_y,
+            mode='markers',
+            marker=dict(size=10, color='rgb(0, 0, 0)'),
+            name='Stops',
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+    
+    # Configure layout
     fig.update_layout(
-        title='2D Elevation Profile',
-        xaxis_title='Distance along route (km)',
-        yaxis_title='Elevation (m)',
-        paper_bgcolor='rgb(15, 18, 25)',
-        plot_bgcolor='rgb(20, 24, 30)',
-        font=dict(color='rgb(200, 210, 220)'),
+        paper_bgcolor='white',
+        plot_bgcolor='white',
+        showlegend=False,
         xaxis=dict(
-            gridcolor='rgb(50, 55, 65)',
-            showgrid=True
+            visible=False,
+            showgrid=False,
+            zeroline=False
         ),
         yaxis=dict(
-            gridcolor='rgb(50, 55, 65)',
-            showgrid=True
+            visible=False,
+            showgrid=False,
+            zeroline=False,
+            scaleanchor='x',
+            scaleratio=1
         ),
         width=1400,
-        height=400,
-        hovermode='x unified'
+        height=900,
+        margin=dict(l=20, r=20, t=20, b=20)
     )
     
     return fig
@@ -318,14 +367,44 @@ def load_stops(filename):
             for line in f:
                 line = line.strip()
                 if line:
+                    # Split by comma and only take first 2 parts (lat, lon)
+                    # This handles both "lat, lon" and "lat, lon, distance" formats
                     parts = line.split(',')
-                    if len(parts) == 2:
+                    if len(parts) >= 2:
                         lat = float(parts[0].strip())
                         lon = float(parts[1].strip())
                         stops.append((lat, lon))
         return stops
     except FileNotFoundError:
         return None
+
+
+def save_stops_with_distances(filename, stops, coords, distances):
+    """Save stops with their distances along the route."""
+    KM_TO_MILES = 0.621371
+    
+    with open(filename, 'w') as f:
+        # Write start point
+        start_lat, start_lon = coords[0]
+        f.write(f"{start_lat}, {start_lon}, 0.00 km (0.00 mi) - START\n")
+        
+        # Write stop points
+        for i, (stop_lat, stop_lon) in enumerate(stops):
+            # Find closest point on route
+            idx = find_closest_point_index(coords, stop_lat, stop_lon)
+            distance_km = distances[idx]
+            distance_mi = distance_km * KM_TO_MILES
+            
+            # Write lat, lon, and distances in both units
+            f.write(f"{stop_lat}, {stop_lon}, {distance_km:.2f} km ({distance_mi:.2f} mi) - STOP {i+1}\n")
+        
+        # Write end point
+        end_lat, end_lon = coords[-1]
+        total_km = distances[-1]
+        total_mi = total_km * KM_TO_MILES
+        f.write(f"{end_lat}, {end_lon}, {total_km:.2f} km ({total_mi:.2f} mi) - END\n")
+    
+    print(f"   Updated {filename} with distances along route (km and miles)")
 
 
 def main():
@@ -347,26 +426,29 @@ def main():
     print(f"   Total ascent: {elevation_gain:.0f}m")
     
     # Load stops if available
-    stops = load_stops('STOPS.md')
+    stops_file = 'STOPS.md'
+    stops = load_stops(stops_file)
     if stops:
         print(f"🛑 Found {len(stops)} stops to mark on route")
+        # Calculate and save distances along route for each stop
+        save_stops_with_distances(stops_file, stops, coords, distances)
     
     print("🎨 Creating 3D visualization...")
     fig_3d = create_visualization(coords, distances, elevations, stops=stops)
     
-    print("📊 Creating 2D elevation profile...")
-    fig_2d = create_elevation_profile_2d(distances, elevations)
+    print("🗺️  Creating 2D top-down map...")
+    fig_2d = create_map_2d(coords, stops=stops)
     
     # Save and show
     output_3d = 'gpx_visualization_3d.html'
-    output_2d = 'gpx_elevation_profile_2d.html'
+    output_2d = 'gpx_map_2d.html'
     
     print(f"\n💾 Saving visualizations...")
     fig_3d.write_html(output_3d)
     print(f"   3D view: {output_3d}")
     
     fig_2d.write_html(output_2d)
-    print(f"   2D profile: {output_2d}")
+    print(f"   2D map: {output_2d}")
     
     print("\n✨ Opening in browser...")
     fig_3d.show()
